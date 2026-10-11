@@ -1,0 +1,327 @@
+name: Build KagamiChihiro 5.10.260 for Android 16
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  KERNEL_REPO: rotteng749-lgtm/KagamiChihiro-Kernel
+  KERNEL_BRANCH: chihiro-rebase
+  TARGET_VERSION: "5.10.260"
+  DEFCONFIG: gki_defconfig
+  BUILD_NAME: KagamiChihiro-5.10.260-A16
+
+jobs:
+  build:
+    name: Build kernel 5.10.260
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout KagamiChihiro kernel source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.KERNEL_REPO }}
+          ref: ${{ env.KERNEL_BRANCH }}
+          fetch-depth: 1
+          submodules: false
+          path: kernel-src
+
+      - name: Verify kernel source and version
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel-src
+
+          echo "Repository:"
+          git remote -v
+          echo "Commit:"
+          git log -1 --oneline
+
+          test -f Makefile
+          test -f arch/arm64/configs/gki_defconfig
+          test -x scripts/config
+
+          SOURCE_VERSION="$(make -s kernelversion)"
+          echo "Source kernel version: $SOURCE_VERSION"
+
+          if [ "$SOURCE_VERSION" != "$TARGET_VERSION" ]; then
+            echo "ERROR: source branch menghasilkan $SOURCE_VERSION, bukan $TARGET_VERSION."
+            echo "Workflow dihentikan agar artifact tidak diberi nama versi yang salah."
+            exit 1
+          fi
+
+          echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Remove broken KernelSU references
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/kernel-src"
+
+          echo "KernelSU references before cleanup:"
+          grep -RniE             'kernelsu|kernel_su|drivers/kernelsu|drivers/kernel_su|CONFIG_KSU|CONFIG_KERNELSU'             drivers/Kconfig drivers/Makefile drivers/Kbuild 2>/dev/null || true
+
+          # Build baseline ini tidak menyertakan KernelSU. Hapus referensi yang
+          # menunjuk ke folder drivers/kernelsu yang tidak tersedia.
+          sed -i -E             '/source[[:space:]]+".*drivers\/(kernelsu|kernel_su)\/Kconfig"/Id'             drivers/Kconfig
+
+          if [ -f drivers/Makefile ]; then
+            sed -i -E               '/(drivers\/(kernelsu|kernel_su)|(^|\/)kernelsu\/|CONFIG_KSU|CONFIG_KERNELSU)/Id'               drivers/Makefile
+          fi
+
+          if [ -f drivers/Kbuild ]; then
+            sed -i -E               '/(drivers\/(kernelsu|kernel_su)|(^|\/)kernelsu\/|CONFIG_KSU|CONFIG_KERNELSU)/Id'               drivers/Kbuild
+          fi
+
+          echo "KernelSU references after cleanup:"
+          grep -RniE             'source.*drivers/(kernelsu|kernel_su)/Kconfig|CONFIG_KSU|CONFIG_KERNELSU'             drivers/Kconfig drivers/Makefile drivers/Kbuild 2>/dev/null || true
+
+          if grep -qiE             'source[[:space:]]+".*drivers/(kernelsu|kernel_su)/Kconfig"'             drivers/Kconfig; then
+            echo "ERROR: referensi KernelSU yang rusak masih ada di drivers/Kconfig."
+            exit 1
+          fi
+
+          echo "Broken KernelSU references removed successfully."
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc \
+            bison \
+            build-essential \
+            ccache \
+            cpio \
+            curl \
+            device-tree-compiler \
+            dwarves \
+            flex \
+            gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi \
+            git \
+            libelf-dev \
+            libncurses-dev \
+            libssl-dev \
+            lz4 \
+            lzop \
+            python3 \
+            rsync \
+            unzip \
+            zip
+
+      - name: Download AOSP Clang r416183b
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth=1 \
+            https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b.git \
+            "$GITHUB_WORKSPACE/clang"
+
+          echo "$GITHUB_WORKSPACE/clang/bin" >> "$GITHUB_PATH"
+          "$GITHUB_WORKSPACE/clang/bin/clang" --version
+          "$GITHUB_WORKSPACE/clang/bin/ld.lld" --version
+
+      - name: Generate and tune GKI config
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel-src
+
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+
+          if grep -qiE             'source[[:space:]]+".*drivers/(kernelsu|kernel_su)/Kconfig"'             drivers/Kconfig; then
+            echo "ERROR: drivers/Kconfig masih merujuk folder KernelSU yang tidak tersedia."
+            grep -niE 'kernelsu|kernel_su' drivers/Kconfig || true
+            exit 1
+          fi
+
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 "$DEFCONFIG"
+
+          CONFIG_FILE="out/.config"
+
+          ./scripts/config --file "$CONFIG_FILE" \
+            --set-str CONFIG_LOCALVERSION "-android12-9-KagamiChihiro-A16"
+          ./scripts/config --file "$CONFIG_FILE" \
+            --disable CONFIG_LOCALVERSION_AUTO
+          ./scripts/config --file "$CONFIG_FILE" \
+            --disable CONFIG_WERROR
+
+          # Namespace untuk Droidspaces/container Android.
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_NAMESPACES
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_PID_NS
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_IPC_NS
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_UTS_NS
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_USER_NS
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_POSIX_MQUEUE
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_DEVTMPFS
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_DEVTMPFS_MOUNT
+
+          # Hindari konfigurasi tambahan yang sebelumnya bermasalah.
+          ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_TCP_CONG_BBR3 || true
+          ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_NTSYNC || true
+          ./scripts/config --file "$CONFIG_FILE" \
+            --set-str CONFIG_DEFAULT_TCP_CONG "cubic"
+
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
+
+          echo "Important final config:"
+          grep -E \
+            'CONFIG_LOCALVERSION=|CONFIG_(NAMESPACES|PID_NS|IPC_NS|UTS_NS|USER_NS|POSIX_MQUEUE|DEVTMPFS|WERROR)=|CONFIG_DEFAULT_TCP_CONG=' \
+            "$CONFIG_FILE" || true
+
+          cp "$CONFIG_FILE" "$GITHUB_WORKSPACE/kernel-config-5.10.260.txt"
+
+      - name: Build kernel Image
+        shell: bash
+        run: |
+          set -o pipefail
+          cd kernel-src
+
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export KBUILD_BUILD_USER="MillenniumTeam"
+          export KBUILD_BUILD_HOST="GitHub-Actions"
+
+          make O=out \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            KCFLAGS="-Wno-error" \
+            -j"$(nproc --all)" \
+            Image 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+
+          IMAGE="out/arch/arm64/boot/Image"
+
+          if [ ! -s "$IMAGE" ]; then
+            echo "ERROR: kernel Image tidak ditemukan atau kosong."
+            exit 1
+          fi
+
+          BUILT_RELEASE="$(make -s O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 kernelrelease)"
+          echo "Built kernel release: $BUILT_RELEASE"
+
+          case "$BUILT_RELEASE" in
+            5.10.260-*)
+              echo "Kernel version verification passed."
+              ;;
+            *)
+              echo "ERROR: hasil build bukan kernel 5.10.260."
+              exit 1
+              ;;
+          esac
+
+          file "$IMAGE"
+          ls -lh "$IMAGE"
+          sha256sum "$IMAGE" | tee "$GITHUB_WORKSPACE/Image.sha256"
+
+      - name: Package AnyKernel3 ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+
+          git clone --depth=1 \
+            https://github.com/osm0sis/AnyKernel3.git \
+            anykernel
+
+          cp kernel-src/out/arch/arm64/boot/Image anykernel/Image
+
+          sed -i \
+            's/^kernel.string=.*/kernel.string=KagamiChihiro 5.10.260 for Infinix Note 30 Android 16/' \
+            anykernel/anykernel.sh
+          sed -i 's/^do.devicecheck=.*/do.devicecheck=0/' anykernel/anykernel.sh
+          sed -i 's/^do.modules=.*/do.modules=0/' anykernel/anykernel.sh
+          sed -i 's/^do.systemless=.*/do.systemless=1/' anykernel/anykernel.sh
+          sed -i 's/^do.cleanup=.*/do.cleanup=1/' anykernel/anykernel.sh
+          sed -i 's/^do.cleanuponabort=.*/do.cleanuponabort=0/' anykernel/anykernel.sh
+          sed -i 's|^BLOCK=.*|BLOCK=boot;|' anykernel/anykernel.sh
+          sed -i 's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=auto;/' anykernel/anykernel.sh
+
+          echo "AnyKernel3 configuration:"
+          grep -E \
+            '^(kernel.string|do.devicecheck|do.modules|do.systemless|do.cleanup|do.cleanuponabort|BLOCK|IS_SLOT_DEVICE)=' \
+            anykernel/anykernel.sh
+
+          if ! grep -q '^BLOCK=boot;' anykernel/anykernel.sh; then
+            echo "ERROR: BLOCK=boot tidak berhasil diterapkan."
+            exit 1
+          fi
+
+          rm -rf anykernel/.git anykernel/.github
+          rm -f anykernel/README.md
+
+          (
+            cd anykernel
+            zip -r9 "../${BUILD_NAME}.zip" . \
+              -x '*.git*' \
+              -x '*placeholder*'
+          )
+
+          test -s "${BUILD_NAME}.zip"
+          unzip -t "${BUILD_NAME}.zip"
+          sha256sum "${BUILD_NAME}.zip" > "${BUILD_NAME}.zip.sha256"
+          ls -lh "${BUILD_NAME}.zip"
+
+      - name: Upload logs and build files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BUILD_NAME }}-files
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            build.log
+            kernel-config-5.10.260.txt
+            Image.sha256
+            ${{ env.BUILD_NAME }}.zip
+            ${{ env.BUILD_NAME }}.zip.sha256
+
+      - name: Prepare release information
+        if: success()
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="kagami-5.10.260-a16-$(date -u +'%Y%m%d-%H%M%S')"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "time=$(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release.outputs.tag }}
+          name: KagamiChihiro 5.10.260 for Android 16
+          body: |
+            ## KagamiChihiro Kernel
+
+            - Device: Infinix Note 30 / MT6789
+            - Source version: 5.10.260
+            - Source branch: chihiro-rebase
+            - Source commit: ${{ env.SOURCE_COMMIT }}
+            - Local version: android12-9-KagamiChihiro-A16
+            - Build time: ${{ steps.release.outputs.time }}
+            - Namespace support: enabled
+            - KernelSU/SUSFS: not included in this baseline build
+            - Package target: boot
+
+            Back up the exact stock boot image before flashing.
+          files: |
+            ${{ env.BUILD_NAME }}.zip
+            ${{ env.BUILD_NAME }}.zip.sha256
+            kernel-config-5.10.260.txt
+            Image.sha256
+            build.log
+          draft: false
+          prerelease: true
+          make_latest: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
