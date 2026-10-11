@@ -17,13 +17,13 @@ jobs:
             bc build-essential zip curl libssl-dev libncurses5-dev libncursesw5-dev \
             libelf-dev python3 libxml2-dev
 
-      - name: Unduh Sumber Kernel & Pasang KernelSU
+      - name: Unduh Sumber Kernel & Pasang KernelSU-Next (Spoofed)
         run: |
           git clone --depth=1 https://github.com/rotteng749-lgtm/KagamiChihiro-Kernel.git kernel-src
           
-          # Menyuntikkan modul KernelSU untuk memperbaiki galat Kconfig yang hilang
+          # Injeksi KernelSU-Next dengan tag spesifik v3.4.1-spoofed
           cd kernel-src
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s v3.4.1-spoofed
 
       - name: Unduh AOSP Clang r416183b
         run: |
@@ -33,7 +33,6 @@ jobs:
         run: |
           cd kernel-src
           
-          # Basis defconfig GKI
           DEFCONFIG="arch/arm64/configs/gki_defconfig"
 
           ./scripts/config --file $DEFCONFIG --set-str CONFIG_LOCALVERSION "-KagamiChihiro-MillenniumTeam-android12-9"
@@ -48,6 +47,10 @@ jobs:
           ./scripts/config --file $DEFCONFIG --enable CONFIG_DEVTMPFS
           ./scripts/config --file $DEFCONFIG --enable CONFIG_DEVTMPFS_MOUNT
           ./scripts/config --file $DEFCONFIG --enable CONFIG_POSIX_MQUEUE
+
+          # Nonaktifkan modul jaringan BBR3 yang memicu galat kompilasi
+          ./scripts/config --file $DEFCONFIG --disable CONFIG_TCP_CONG_BBR3
+          ./scripts/config --file $DEFCONFIG --set-str CONFIG_DEFAULT_TCP_CONG "cubic"
 
       - name: Jalankan Kompilasi Kernel
         run: |
@@ -70,7 +73,7 @@ jobs:
           cp kernel-src/out/arch/arm64/boot/Image anykernel/
 
           cd anykernel
-          zip -r9 ../Kernel-Kagami-InfinixNote30-NS.zip * -x .git README.md
+          zip -r9 ../Kernel-Kagami-InfinixNote30-NS-KSUNext.zip * -x .git README.md
 
       - name: Siapkan Informasi Rilis
         id: release_info
@@ -83,14 +86,15 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release_info.outputs.tag_name }}
-          name: "Kernel Kagami Infinix Note 30 (Namespace + KernelSU) - ${{ steps.release_info.outputs.tag_name }}"
+          name: "Kernel Kagami Infinix Note 30 (Namespace + KSUNext Spoofed) - ${{ steps.release_info.outputs.tag_name }}"
           body: |
             ### Spesifikasi Kernel:
-            - **Perangkat**: Infinix Note 30
+            - **Perangkat**: Infinix Note 30 (Helio G99)
             - **Sumber**: rotteng749-lgtm/KagamiChihiro-Kernel
             - **Localversion**: `-KagamiChihiro-MillenniumTeam-android12-9`
-            - **Fitur Aktif**: PID_NS, IPC_NS, USER_NS, DEVTMPFS, KernelSU
-          files: Kernel-Kagami-InfinixNote30-NS.zip
+            - **Root**: KernelSU-Next (v3.4.1-spoofed 33333-5)
+            - **Fitur Aktif**: PID_NS, IPC_NS, USER_NS, DEVTMPFS
+          files: Kernel-Kagami-InfinixNote30-NS-KSUNext.zip
           draft: false
           prerelease: false
         env:
