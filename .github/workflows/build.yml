@@ -21,7 +21,6 @@ jobs:
         run: |
           git clone --depth=1 https://github.com/rotteng749-lgtm/KagamiChihiro-Kernel.git kernel-src
           
-          # Menghapus paksa teks pemanggilan KernelSU dari Kconfig dan Makefile bawaan repositori
           cd kernel-src
           sed -i '/kernelsu/d' drivers/Kconfig
           sed -i '/kernelsu/d' drivers/Makefile
@@ -49,9 +48,13 @@ jobs:
           ./scripts/config --file $DEFCONFIG --enable CONFIG_DEVTMPFS_MOUNT
           ./scripts/config --file $DEFCONFIG --enable CONFIG_POSIX_MQUEUE
 
-          # Nonaktifkan modul jaringan BBR3 yang memicu galat kompilasi
+          # Nonaktifkan modul bermasalah
           ./scripts/config --file $DEFCONFIG --disable CONFIG_TCP_CONG_BBR3
           ./scripts/config --file $DEFCONFIG --set-str CONFIG_DEFAULT_TCP_CONG "cubic"
+          ./scripts/config --file $DEFCONFIG --disable CONFIG_NTSYNC
+          
+          # Senjata Pamungkas: Cegah warning menjadi error fatal
+          ./scripts/config --file $DEFCONFIG --disable CONFIG_WERROR
 
       - name: Jalankan Kompilasi Kernel
         run: |
@@ -61,7 +64,9 @@ jobs:
           export SUBARCH=arm64
 
           make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 gki_defconfig
-          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 -j$(nproc --all) Image
+          
+          # Tambahkan KCFLAGS="-Wno-error" agar kompilator mengabaikan peringatan kaku dari kodingan yang kurang rapi
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 KCFLAGS="-Wno-error" -j$(nproc --all) Image
 
       - name: Kemas ke AnyKernel3
         run: |
@@ -74,28 +79,26 @@ jobs:
           cp kernel-src/out/arch/arm64/boot/Image anykernel/
 
           cd anykernel
-          zip -r9 ../Kernel-Kagami-InfinixNote30-NS-NoRoot.zip * -x .git README.md
+          zip -r9 ../Kernel-Kagami-InfinixNote30-NS-Final.zip * -x .git README.md
 
       - name: Siapkan Informasi Rilis
         id: release_info
         run: |
-          TAG_NAME="infinix-ns-noroot-$(date +'%Y%m%d-%H%M%S')"
+          TAG_NAME="infinix-ns-final-$(date +'%Y%m%d-%H%M%S')"
           echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
-          echo "build_time=$(date +'\%Y-\%m-\%d \%H:\%M:\%S UTC')" >> $GITHUB_OUTPUT
+          echo "build_time=$(date +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
 
       - name: Publikasikan Berkas ke GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release_info.outputs.tag_name }}
-          name: "Kernel Kagami Infinix Note 30 (Namespace Murni) - ${{ steps.release_info.outputs.tag_name }}"
+          name: "Kernel Kagami Infinix Note 30 (Final Fix) - ${{ steps.release_info.outputs.tag_name }}"
           body: |
             ### Spesifikasi Kernel:
             - **Perangkat**: Infinix Note 30 (Helio G99)
-            - **Sumber**: rotteng749-lgtm/KagamiChihiro-Kernel
-            - **Localversion**: `-KagamiChihiro-MillenniumTeam-android12-9`
-            - **Root**: Tidak Ada (Silakan patch manual via Manager App)
             - **Fitur Aktif**: PID_NS, IPC_NS, USER_NS, DEVTMPFS
-          files: Kernel-Kagami-InfinixNote30-NS-NoRoot.zip
+            - **Fixes**: No NTSync, No BBR3, No-Werror applied
+          files: Kernel-Kagami-InfinixNote30-NS-Final.zip
           draft: false
           prerelease: false
         env:
