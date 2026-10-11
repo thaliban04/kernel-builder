@@ -1,0 +1,205 @@
+name: Build KagamiChihiro 5.10.258 for Android 16
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  TARGET_VERSION: "5.10.258"
+  DEFCONFIG: "gki_defconfig"
+  BUILD_NAME: "KagamiChihiro-5.10.258-A16"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout full kernel history
+        uses: actions/checkout@v4
+        with:
+          ref: chihiro-rebase
+          fetch-depth: 0
+          submodules: false
+
+      - name: Find and checkout actual Linux 5.10.258 source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          target_commit=""
+          while read -r commit; do
+            version="$(git show "$commit:Makefile" 2>/dev/null | awk '$1=="VERSION"{v=$3} $1=="PATCHLEVEL"{p=$3} $1=="SUBLEVEL"{s=$3} END{if(v&&p&&s) print v"."p"."s}')"
+            if [ "$version" = "$TARGET_VERSION" ]; then
+              target_commit="$commit"
+              break
+            fi
+          done < <(git rev-list chihiro-rebase -- Makefile)
+
+          if [ -z "$target_commit" ]; then
+            echo "ERROR: commit dengan versi kernel $TARGET_VERSION tidak ditemukan dalam riwayat branch chihiro-rebase."
+            echo "Jangan hanya mengganti label KERNEL_VERSION karena itu tidak mengubah source kernel."
+            exit 1
+          fi
+
+          echo "Memakai commit: $target_commit"
+          git checkout --detach "$target_commit"
+
+          actual_version="$(make -s kernelversion)"
+          echo "Versi source aktual: $actual_version"
+          test "$actual_version" = "$TARGET_VERSION"
+          echo "SOURCE_COMMIT=$target_commit" >> "$GITHUB_ENV"
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison flex build-essential ccache curl git zip \
+            libssl-dev libelf-dev libncurses-dev dwarves \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+            python3 cpio rsync device-tree-compiler
+
+      - name: Download AOSP Clang r416183b
+        run: |
+          set -euo pipefail
+          git clone --depth=1 \
+            https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b.git \
+            "$GITHUB_WORKSPACE/clang"
+          echo "$GITHUB_WORKSPACE/clang/bin" >> "$GITHUB_PATH"
+          "$GITHUB_WORKSPACE/clang/bin/clang" --version
+          "$GITHUB_WORKSPACE/clang/bin/ld.lld" --version
+
+      - name: Generate and tune GKI config
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 "$DEFCONFIG"
+          CONFIG_FILE="out/.config"
+
+          ./scripts/config --file "$CONFIG_FILE" --set-str CONFIG_LOCALVERSION "-android12-9-KagamiChihiro-A16"
+          ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_LOCALVERSION_AUTO
+          ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_WERROR
+
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_NAMESPACES
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_PID_NS
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_IPC_NS
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_UTS_NS
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_USER_NS
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_POSIX_MQUEUE
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_DEVTMPFS
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_DEVTMPFS_MOUNT
+
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
+
+          grep -E 'CONFIG_LOCALVERSION=|CONFIG_(NAMESPACES|PID_NS|IPC_NS|UTS_NS|USER_NS|POSIX_MQUEUE|DEVTMPFS|WERROR)=' "$CONFIG_FILE" || true
+          cp "$CONFIG_FILE" kernel-config-5.10.258.txt
+
+      - name: Build kernel Image
+        shell: bash
+        run: |
+          set -o pipefail
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export KBUILD_BUILD_USER="MillenniumTeam"
+          export KBUILD_BUILD_HOST="GitHub-Actions"
+
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            KCFLAGS="-Wno-error" -j"$(nproc)" Image 2>&1 | tee build.log
+
+          IMAGE="out/arch/arm64/boot/Image"
+          test -s "$IMAGE"
+          file "$IMAGE"
+          ls -lh "$IMAGE"
+          sha256sum "$IMAGE" | tee Image.sha256
+
+          built_release="$(make -s O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 kernelrelease)"
+          echo "Kernel release hasil build: $built_release"
+          case "$built_release" in
+            5.10.258-*) ;;
+            *) echo "ERROR: hasil build bukan 5.10.258"; exit 1 ;;
+          esac
+
+      - name: Package AnyKernel3
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
+
+          cp out/arch/arm64/boot/Image anykernel/Image
+
+          sed -i 's/^kernel.string=.*/kernel.string=KagamiChihiro 5.10.258 for Infinix Note 30 Android 16/' anykernel/anykernel.sh
+          sed -i 's/^do.devicecheck=.*/do.devicecheck=0/' anykernel/anykernel.sh
+          sed -i 's/^do.modules=.*/do.modules=0/' anykernel/anykernel.sh
+          sed -i 's/^do.systemless=.*/do.systemless=1/' anykernel/anykernel.sh
+          sed -i 's/^do.cleanup=.*/do.cleanup=1/' anykernel/anykernel.sh
+          sed -i 's/^do.cleanuponabort=.*/do.cleanuponabort=0/' anykernel/anykernel.sh
+          sed -i 's|^BLOCK=.*|BLOCK=boot;|' anykernel/anykernel.sh
+          sed -i 's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=auto;/' anykernel/anykernel.sh
+
+          grep -E '^(kernel.string|do.devicecheck|do.modules|do.systemless|do.cleanup|do.cleanuponabort|BLOCK|IS_SLOT_DEVICE)=' anykernel/anykernel.sh
+
+          rm -rf anykernel/.git anykernel/.github
+          rm -f anykernel/README.md
+          (
+            cd anykernel
+            zip -r9 "../${BUILD_NAME}.zip" . -x '*.git*' '*placeholder*'
+          )
+
+          test -s "${BUILD_NAME}.zip"
+          unzip -t "${BUILD_NAME}.zip"
+          sha256sum "${BUILD_NAME}.zip" > "${BUILD_NAME}.zip.sha256"
+
+      - name: Upload build files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BUILD_NAME }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            ${{ env.BUILD_NAME }}.zip
+            ${{ env.BUILD_NAME }}.zip.sha256
+            kernel-config-5.10.258.txt
+            Image.sha256
+            build.log
+
+      - name: Create release information
+        id: release
+        shell: bash
+        run: |
+          tag="kagami-5.10.258-a16-$(date -u +'%Y%m%d-%H%M%S')"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release.outputs.tag }}
+          name: KagamiChihiro 5.10.258 for Android 16
+          body: |
+            Target: Infinix Note 30 X6833B / MT6789
+            Source version: 5.10.258
+            Source commit: ${{ env.SOURCE_COMMIT }}
+            KMI line retained: android12-5.10 / generation 9 label
+            Android userspace: Android 16
+            KernelSU/SUSFS: not included in this safety-first build
+
+            Back up the exact stock boot image before flashing.
+          files: |
+            ${{ env.BUILD_NAME }}.zip
+            ${{ env.BUILD_NAME }}.zip.sha256
+            kernel-config-5.10.258.txt
+            Image.sha256
+            build.log
+          draft: false
+          prerelease: true
+          make_latest: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
