@@ -23,7 +23,7 @@ jobs:
           
           # Injeksi KernelSU-Next dengan tag spesifik v3.4.1-spoofed
           cd kernel-src
-          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s v3.4.1-spoofed
+          curl -LSsf "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/main/kernel/setup.sh" | bash -s v3.4.1-spoofed
 
       - name: Unduh AOSP Clang r416183b
         run: |
