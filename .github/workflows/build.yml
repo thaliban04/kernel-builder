@@ -19,7 +19,7 @@ jobs:
 
       - name: Unduh Sumber Kernel MillenniumOSS
         run: |
-          git clone --depth=1 https://github.com/MillenniumOSS/android_kernel_common_android12-5.10.git kernel-src
+          git clone --depth=1 https://github.com/MillenniumOSS/android_kernel_common_millennium_android12-5.10.git kernel-src
 
       - name: Unduh AOSP Clang r416183b
         run: |
