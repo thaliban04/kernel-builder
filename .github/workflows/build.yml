@@ -17,13 +17,14 @@ jobs:
             bc build-essential zip curl libssl-dev libncurses5-dev libncursesw5-dev \
             libelf-dev python3 libxml2-dev
 
-      - name: Unduh Sumber Kernel & Pasang KernelSU-Next (Spoofed)
+      - name: Unduh Sumber Kernel & Bersihkan Referensi KSU
         run: |
           git clone --depth=1 https://github.com/rotteng749-lgtm/KagamiChihiro-Kernel.git kernel-src
           
-          # Injeksi KernelSU-Next dengan tag spesifik v3.4.1-spoofed
+          # Menghapus paksa teks pemanggilan KernelSU dari Kconfig dan Makefile bawaan repositori
           cd kernel-src
-          curl -LSsf "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/main/kernel/setup.sh" | bash -s v3.4.1-spoofed
+          sed -i '/kernelsu/d' drivers/Kconfig
+          sed -i '/kernelsu/d' drivers/Makefile
 
       - name: Unduh AOSP Clang r416183b
         run: |
@@ -73,12 +74,12 @@ jobs:
           cp kernel-src/out/arch/arm64/boot/Image anykernel/
 
           cd anykernel
-          zip -r9 ../Kernel-Kagami-InfinixNote30-NS-KSUNext.zip * -x .git README.md
+          zip -r9 ../Kernel-Kagami-InfinixNote30-NS-NoRoot.zip * -x .git README.md
 
       - name: Siapkan Informasi Rilis
         id: release_info
         run: |
-          TAG_NAME="infinix-ns-$(date +'%Y%m%d-%H%M%S')"
+          TAG_NAME="infinix-ns-noroot-$(date +'%Y%m%d-%H%M%S')"
           echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
           echo "build_time=$(date +'\%Y-\%m-\%d \%H:\%M:\%S UTC')" >> $GITHUB_OUTPUT
 
@@ -86,15 +87,15 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release_info.outputs.tag_name }}
-          name: "Kernel Kagami Infinix Note 30 (Namespace + KSUNext Spoofed) - ${{ steps.release_info.outputs.tag_name }}"
+          name: "Kernel Kagami Infinix Note 30 (Namespace Murni) - ${{ steps.release_info.outputs.tag_name }}"
           body: |
             ### Spesifikasi Kernel:
             - **Perangkat**: Infinix Note 30 (Helio G99)
             - **Sumber**: rotteng749-lgtm/KagamiChihiro-Kernel
             - **Localversion**: `-KagamiChihiro-MillenniumTeam-android12-9`
-            - **Root**: KernelSU-Next (v3.4.1-spoofed 33333-5)
+            - **Root**: Tidak Ada (Silakan patch manual via Manager App)
             - **Fitur Aktif**: PID_NS, IPC_NS, USER_NS, DEVTMPFS
-          files: Kernel-Kagami-InfinixNote30-NS-KSUNext.zip
+          files: Kernel-Kagami-InfinixNote30-NS-NoRoot.zip
           draft: false
           prerelease: false
         env:
