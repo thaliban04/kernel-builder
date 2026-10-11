@@ -17,10 +17,13 @@ jobs:
             bc build-essential zip curl libssl-dev libncurses5-dev libncursesw5-dev \
             libelf-dev python3 libxml2-dev
 
-      - name: Unduh Sumber Kernel Infinix Note 30
+      - name: Unduh Sumber Kernel & Pasang KernelSU
         run: |
-          # Menggunakan repositori khusus Infinix Note 30
           git clone --depth=1 https://github.com/rotteng749-lgtm/KagamiChihiro-Kernel.git kernel-src
+          
+          # Menyuntikkan modul KernelSU untuk memperbaiki galat Kconfig yang hilang
+          cd kernel-src
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
 
       - name: Unduh AOSP Clang r416183b
         run: |
@@ -30,13 +33,13 @@ jobs:
         run: |
           cd kernel-src
           
-          # Coba gunakan gki_defconfig sebagai basis GKI
+          # Basis defconfig GKI
           DEFCONFIG="arch/arm64/configs/gki_defconfig"
 
           ./scripts/config --file $DEFCONFIG --set-str CONFIG_LOCALVERSION "-KagamiChihiro-MillenniumTeam-android12-9"
           ./scripts/config --file $DEFCONFIG --disable CONFIG_LOCALVERSION_AUTO
 
-          # Fitur untuk Droidspaces
+          # Fitur Namespace untuk Droidspaces
           ./scripts/config --file $DEFCONFIG --enable CONFIG_NAMESPACES
           ./scripts/config --file $DEFCONFIG --enable CONFIG_PID_NS
           ./scripts/config --file $DEFCONFIG --enable CONFIG_IPC_NS
@@ -80,13 +83,13 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release_info.outputs.tag_name }}
-          name: "Kernel Kagami Infinix Note 30 (Namespace) - ${{ steps.release_info.outputs.tag_name }}"
+          name: "Kernel Kagami Infinix Note 30 (Namespace + KernelSU) - ${{ steps.release_info.outputs.tag_name }}"
           body: |
             ### Spesifikasi Kernel:
             - **Perangkat**: Infinix Note 30
             - **Sumber**: rotteng749-lgtm/KagamiChihiro-Kernel
             - **Localversion**: `-KagamiChihiro-MillenniumTeam-android12-9`
-            - **Fitur Aktif**: PID_NS, IPC_NS, USER_NS, DEVTMPFS
+            - **Fitur Aktif**: PID_NS, IPC_NS, USER_NS, DEVTMPFS, KernelSU
           files: Kernel-Kagami-InfinixNote30-NS.zip
           draft: false
           prerelease: false
