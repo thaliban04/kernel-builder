@@ -1,4 +1,4 @@
-name: Build KagamiChihiro 5.10.264 for Android 16
+name: Build KagamiChihiro 5.10.260 for Android 16
 
 on:
   workflow_dispatch:
@@ -9,13 +9,13 @@ permissions:
 env:
   KERNEL_REPO: rotteng749-lgtm/KagamiChihiro-Kernel
   KERNEL_BRANCH: chihiro-rebase
-  TARGET_VERSION: "5.10.264"
+  TARGET_VERSION: "5.10.260"
   DEFCONFIG: gki_defconfig
-  BUILD_NAME: KagamiChihiro-5.10.264-A16
+  BUILD_NAME: KagamiChihiro-5.10.260-A16
 
 jobs:
   build:
-    name: Build kernel 5.10.264
+    name: Build kernel 5.10.260
     runs-on: ubuntu-22.04
     timeout-minutes: 180
 
@@ -139,7 +139,7 @@ jobs:
             'CONFIG_LOCALVERSION=|CONFIG_(NAMESPACES|PID_NS|IPC_NS|UTS_NS|USER_NS|POSIX_MQUEUE|DEVTMPFS|WERROR)=|CONFIG_DEFAULT_TCP_CONG=' \
             "$CONFIG_FILE" || true
 
-          cp "$CONFIG_FILE" "$GITHUB_WORKSPACE/kernel-config-5.10.264.txt"
+          cp "$CONFIG_FILE" "$GITHUB_WORKSPACE/kernel-config-5.10.260.txt"
 
       - name: Build kernel Image
         shell: bash
@@ -172,11 +172,11 @@ jobs:
           echo "Built kernel release: $BUILT_RELEASE"
 
           case "$BUILT_RELEASE" in
-            5.10.264-*)
+            5.10.260-*)
               echo "Kernel version verification passed."
               ;;
             *)
-              echo "ERROR: hasil build bukan kernel 5.10.264."
+              echo "ERROR: hasil build bukan kernel 5.10.260."
               exit 1
               ;;
           esac
@@ -198,7 +198,7 @@ jobs:
           cp kernel-src/out/arch/arm64/boot/Image anykernel/Image
 
           sed -i \
-            's/^kernel.string=.*/kernel.string=KagamiChihiro 5.10.264 for Infinix Note 30 Android 16/' \
+            's/^kernel.string=.*/kernel.string=KagamiChihiro 5.10.260 for Infinix Note 30 Android 16/' \
             anykernel/anykernel.sh
           sed -i 's/^do.devicecheck=.*/do.devicecheck=0/' anykernel/anykernel.sh
           sed -i 's/^do.modules=.*/do.modules=0/' anykernel/anykernel.sh
@@ -242,7 +242,7 @@ jobs:
           retention-days: 14
           path: |
             build.log
-            kernel-config-5.10.264.txt
+            kernel-config-5.10.260.txt
             Image.sha256
             ${{ env.BUILD_NAME }}.zip
             ${{ env.BUILD_NAME }}.zip.sha256
@@ -253,7 +253,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TAG="kagami-5.10.264-a16-$(date -u +'%Y%m%d-%H%M%S')"
+          TAG="kagami-5.10.260-a16-$(date -u +'%Y%m%d-%H%M%S')"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "time=$(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> "$GITHUB_OUTPUT"
 
@@ -262,12 +262,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release.outputs.tag }}
-          name: KagamiChihiro 5.10.264 for Android 16
+          name: KagamiChihiro 5.10.260 for Android 16
           body: |
             ## KagamiChihiro Kernel
 
             - Device: Infinix Note 30 / MT6789
-            - Source version: 5.10.264
+            - Source version: 5.10.260
             - Source branch: chihiro-rebase
             - Source commit: ${{ env.SOURCE_COMMIT }}
             - Local version: android12-9-KagamiChihiro-A16
@@ -280,7 +280,7 @@ jobs:
           files: |
             ${{ env.BUILD_NAME }}.zip
             ${{ env.BUILD_NAME }}.zip.sha256
-            kernel-config-5.10.264.txt
+            kernel-config-5.10.260.txt
             Image.sha256
             build.log
           draft: false
