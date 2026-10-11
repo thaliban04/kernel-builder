@@ -1,0 +1,104 @@
+name: Build GKI Kernel with Namespace Support
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pasang Dependensi Kompilasi
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git ccache automake flex lzop bison \
+            bc build-essential zip curl libssl-dev libncurses5-dev libncursesw5-dev \
+            libelf-dev python3 libxml2-dev
+
+      - name: Unduh Sumber Kernel MillenniumOSS
+        run: |
+          git clone --depth=1 https://github.com/MillenniumOSS/android_kernel_common_android12-5.10.git kernel-src
+
+      - name: Unduh AOSP Clang r416183b
+        run: |
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/clang-r416183b clang
+
+      - name: Sesuaikan Konfigurasi GKI Defconfig
+        run: |
+          cd kernel-src
+          DEFCONFIG="arch/arm64/configs/gki_defconfig"
+
+          # Menyamakan identitas versi kernel
+          ./scripts/config --file $DEFCONFIG --set-str CONFIG_LOCALVERSION "-KagamiChihiro-MillenniumTeam-android12-9"
+          ./scripts/config --file $DEFCONFIG --disable CONFIG_LOCALVERSION_AUTO
+
+          # Mengaktifkan namespace dan subsistem untuk Droidspaces
+          ./scripts/config --file $DEFCONFIG --enable CONFIG_NAMESPACES
+          ./scripts/config --file $DEFCONFIG --enable CONFIG_PID_NS
+          ./scripts/config --file $DEFCONFIG --enable CONFIG_IPC_NS
+          ./scripts/config --file $DEFCONFIG --enable CONFIG_UTS_NS
+          ./scripts/config --file $DEFCONFIG --enable CONFIG_USER_NS
+          ./scripts/config --file $DEFCONFIG --enable CONFIG_DEVTMPFS
+          ./scripts/config --file $DEFCONFIG --enable CONFIG_DEVTMPFS_MOUNT
+          ./scripts/config --file $DEFCONFIG --enable CONFIG_POSIX_MQUEUE
+
+      - name: Jalankan Kompilasi Kernel GKI
+        run: |
+          cd kernel-src
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+
+          # Inisialisasi gki_defconfig dengan LLVM toolchain
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 gki_defconfig
+
+          # Kompilasi biner kernel Image
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 -j$(nproc --all) Image.gz \vert{}\vert{} make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 -j$(nproc --all) Image
+
+      - name: Kemas ke AnyKernel3
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3.git anykernel
+          
+          # Hapus pembatasan model bawaan AnyKernel3 agar kompatibel secara universal
+          sed -i 's/device.name1=.*/device.name1=/' anykernel/anykernel.sh
+          sed -i 's/device.name2=.*/device.name2=/' anykernel/anykernel.sh
+          sed -i 's/device.name3=.*/device.name3=/' anykernel/anykernel.sh
+          sed -i 's/device.name4=.*/device.name4=/' anykernel/anykernel.sh
+          sed -i 's/device.name5=.*/device.name5=/' anykernel/anykernel.sh
+
+          # Salin biner Image ke direktori AnyKernel3
+          if [ -f kernel-src/out/arch/arm64/boot/Image.gz ]; then
+            cp kernel-src/out/arch/arm64/boot/Image.gz anykernel/
+          elif [ -f kernel-src/out/arch/arm64/boot/Image ]; then
+            cp kernel-src/out/arch/arm64/boot/Image anykernel/
+          fi
+
+          cd anykernel
+          zip -r9 ../Kernel-KagamiChihiro-GKI-Namespace.zip * -x .git README.md
+
+      - name: Siapkan Informasi Rilis
+        id: release_info
+        run: |
+          TAG_NAME="gki-ns-$(date +'%Y%m%d-%H%M%S')"
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "build_time=$(date +'\%Y-\%m-\%d \%H:\%M:\%S UTC')" >> $GITHUB_OUTPUT
+
+      - name: Publikasikan Berkas ke GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_info.outputs.tag_name }}
+          name: "Kernel KagamiChihiro GKI (Namespace Enabled) - ${{ steps.release_info.outputs.tag_name }}"
+          body: |
+            ### Spesifikasi Kernel:
+            - **Versi Kernel**: Linux 5.10 (GKI Android 12)
+            - **Localversion**: `-KagamiChihiro-MillenniumTeam-android12-9`
+            - **Toolchain**: AOSP Clang r416183b (LLVM 12.0.5)
+            - **Fitur Aktif**: PID_NS, IPC_NS, USER_NS, DEVTMPFS
+            - **Waktu Kompilasi**: ${{ steps.release_info.outputs.build_time }}
+          files: Kernel-KagamiChihiro-GKI-Namespace.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
