@@ -1,0 +1,301 @@
+name: Build KagamiChihiro Infinix Note 30
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Kernel
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Tampilkan Informasi Runner
+        run: |
+          set -eux
+          uname -a
+          lscpu
+          df -h
+
+      - name: Pasang Dependensi Kompilasi
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y \
+            git \
+            ccache \
+            automake \
+            flex \
+            lzop \
+            bison \
+            bc \
+            build-essential \
+            zip \
+            curl \
+            libssl-dev \
+            libncurses-dev \
+            libelf-dev \
+            python3 \
+            libxml2-dev \
+            dwarves
+
+      - name: Unduh Sumber Kernel
+        run: |
+          set -eux
+
+          git clone \
+            --depth=1 \
+            --branch chihiro-rebase \
+            https://github.com/rotteng749-lgtm/KagamiChihiro-Kernel.git \
+            kernel-src
+
+          cd kernel-src
+
+          echo "Commit kernel:"
+          git log -1 --oneline
+
+          test -f Makefile
+          test -f arch/arm64/configs/gki_defconfig
+          test -x scripts/config
+
+      - name: Bersihkan Referensi KernelSU
+        run: |
+          set -eux
+
+          cd kernel-src
+
+          echo "Referensi KernelSU sebelum dibersihkan:"
+          grep -RniE "kernelsu|kernel_su" drivers/Kconfig drivers/Makefile || true
+
+          sed -i '/[Kk]ernel[Ss][Uu]/d' drivers/Kconfig
+          sed -i '/KERNELSU/d' drivers/Makefile
+          sed -i '/[Kk]ernel[Ss][Uu]/d' drivers/Makefile
+
+          echo "Referensi KernelSU sesudah dibersihkan:"
+          grep -RniE "kernelsu|kernel_su" drivers/Kconfig drivers/Makefile || true
+
+      - name: Unduh AOSP Clang r416183b
+        run: |
+          set -eux
+
+          git clone \
+            --depth=1 \
+            --branch lineage-20.0 \
+            https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b.git \
+            clang
+
+          chmod +x clang/bin/clang
+          clang/bin/clang --version
+          clang/bin/ld.lld --version
+
+      - name: Buat Konfigurasi Kernel
+        run: |
+          set -eux
+
+          cd kernel-src
+
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 gki_defconfig
+
+          CONFIG_FILE="out/.config"
+
+          ./scripts/config --file "$CONFIG_FILE" \
+            --set-str CONFIG_LOCALVERSION "-KagamiChihiro-MillenniumTeam-android12-9"
+
+          ./scripts/config --file "$CONFIG_FILE" \
+            --disable CONFIG_LOCALVERSION_AUTO
+
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_NAMESPACES
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_PID_NS
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_IPC_NS
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_UTS_NS
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_USER_NS
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_DEVTMPFS
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_DEVTMPFS_MOUNT
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_POSIX_MQUEUE
+
+          ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_TCP_CONG_BBR3
+          ./scripts/config --file "$CONFIG_FILE" \
+            --set-str CONFIG_DEFAULT_TCP_CONG "cubic"
+
+          ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_NTSYNC
+          ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_WERROR
+
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
+
+          echo "Konfigurasi penting:"
+          grep -E \
+            "CONFIG_LOCALVERSION=|CONFIG_NAMESPACES=|CONFIG_PID_NS=|CONFIG_IPC_NS=|CONFIG_UTS_NS=|CONFIG_USER_NS=|CONFIG_DEVTMPFS=|CONFIG_POSIX_MQUEUE=|CONFIG_DEFAULT_TCP_CONG=|CONFIG_WERROR=" \
+            out/.config || true
+
+      - name: Jalankan Kompilasi Kernel
+        id: compile
+        shell: bash
+        run: |
+          set -o pipefail
+
+          cd kernel-src
+
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export KBUILD_BUILD_USER="MillenniumTeam"
+          export KBUILD_BUILD_HOST="GitHub-Actions"
+
+          make \
+            O=out \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            KCFLAGS="-Wno-error" \
+            -j"$(nproc --all)" \
+            Image 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+
+      - name: Periksa Hasil Kompilasi
+        run: |
+          set -eux
+
+          IMAGE="kernel-src/out/arch/arm64/boot/Image"
+
+          if [ ! -f "$IMAGE" ]; then
+            echo "ERROR: Image tidak ditemukan."
+            exit 1
+          fi
+
+          if [ ! -s "$IMAGE" ]; then
+            echo "ERROR: Image ditemukan tetapi ukurannya 0 byte."
+            exit 1
+          fi
+
+          ls -lh "$IMAGE"
+          file "$IMAGE"
+          sha256sum "$IMAGE" | tee Image.sha256
+
+          cp kernel-src/out/.config kernel-config.txt
+
+      - name: Kemas ke AnyKernel3
+        run: |
+          set -eux
+
+          git clone \
+            --depth=1 \
+            https://github.com/osm0sis/AnyKernel3.git \
+            anykernel
+
+          sed -i \
+            's/^kernel.string=.*/kernel.string=KagamiChihiro Kernel for Infinix Note 30 by MillenniumTeam/' \
+            anykernel/anykernel.sh
+
+          sed -i \
+            's/^do.devicecheck=.*/do.devicecheck=0/' \
+            anykernel/anykernel.sh
+
+          sed -i \
+            's/^do.modules=.*/do.modules=0/' \
+            anykernel/anykernel.sh
+
+          sed -i \
+            's/^device.name1=.*/device.name1=/' \
+            anykernel/anykernel.sh
+
+          sed -i \
+            's/^device.name2=.*/device.name2=/' \
+            anykernel/anykernel.sh
+
+          sed -i \
+            's/^device.name3=.*/device.name3=/' \
+            anykernel/anykernel.sh
+
+          sed -i \
+            's|^BLOCK=.*|BLOCK=auto;|' \
+            anykernel/anykernel.sh
+
+          sed -i \
+            's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=auto;/' \
+            anykernel/anykernel.sh
+
+          cp kernel-src/out/arch/arm64/boot/Image anykernel/Image
+
+          cd anykernel
+
+          rm -rf .git .github
+          rm -f README.md
+
+          zip -r9 \
+            ../Kernel-Kagami-InfinixNote30-NS-Final.zip \
+            . \
+            -x "*.git*" \
+            -x "*placeholder"
+
+          cd ..
+
+          test -s Kernel-Kagami-InfinixNote30-NS-Final.zip
+
+          unzip -t Kernel-Kagami-InfinixNote30-NS-Final.zip
+          ls -lh Kernel-Kagami-InfinixNote30-NS-Final.zip
+
+          sha256sum \
+            Kernel-Kagami-InfinixNote30-NS-Final.zip \
+            > Kernel-Kagami-InfinixNote30-NS-Final.zip.sha256
+
+      - name: Siapkan Informasi Rilis
+        id: release_info
+        shell: bash
+        run: |
+          set -eux
+
+          TAG_NAME="infinix-ns-final-$(date -u +'%Y%m%d-%H%M%S')"
+
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          echo "build_time=$(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> "$GITHUB_OUTPUT"
+
+      - name: Unggah Log dan Hasil Build sebagai Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: KagamiChihiro-build-files
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            build.log
+            kernel-config.txt
+            Image.sha256
+            Kernel-Kagami-InfinixNote30-NS-Final.zip
+            Kernel-Kagami-InfinixNote30-NS-Final.zip.sha256
+
+      - name: Publikasikan ke GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.release_info.outputs.tag_name }}
+          name: Kernel Kagami Infinix Note 30 - ${{ steps.release_info.outputs.tag_name }}
+          body: |
+            ## KagamiChihiro Kernel
+
+            - Perangkat: Infinix Note 30
+            - SoC: MediaTek Helio G99 / MT6789
+            - Kernel basis: GKI 5.10
+            - Build time: ${{ steps.release_info.outputs.build_time }}
+            - PID namespace: aktif
+            - IPC namespace: aktif
+            - UTS namespace: aktif
+            - User namespace: aktif
+            - DEVTMPFS: aktif
+            - NTSYNC: nonaktif
+            - BBR3: nonaktif
+            - Warning as error: nonaktif
+
+            Peringatan: lakukan backup boot image asli sebelum flashing.
+          files: |
+            Kernel-Kagami-InfinixNote30-NS-Final.zip
+            Kernel-Kagami-InfinixNote30-NS-Final.zip.sha256
+            Image.sha256
+            kernel-config.txt
+            build.log
+          draft: false
+          prerelease: false
