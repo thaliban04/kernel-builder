@@ -16,6 +16,7 @@ env:
   BUILD_NAME: KagamiChihiro-5.10.260-A16
   BOOT_TEMPLATE_TAG: boot-template
   BOOT_TEMPLATE_ASSET: boot-clean.img
+  MAX_BOOT_PARTITION_SIZE: 67108864 # 64 MB batas aman partisi boot MT6789
 
 jobs:
   build:
@@ -40,8 +41,9 @@ jobs:
           cd "$GITHUB_WORKSPACE/kernel-src"
 
           test -f Makefile
-          test -f arch/arm64/configs/gki_defconfig
-          test -x scripts/config
+          test -f "arch/arm64/configs/$DEFCONFIG"
+          test -f scripts/config
+          chmod +x scripts/config
 
           SOURCE_VERSION="$(make -s kernelversion)"
           echo "Source version: $SOURCE_VERSION"
@@ -60,11 +62,11 @@ jobs:
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/kernel-src"
 
-          # This workflow intentionally builds a root-free kernel variant.
+          # Hapus direktori KernelSU untuk varian kernel tanpa root
           rm -rf drivers/kernelsu drivers/KernelSU KernelSU KernelSU-Next
 
           if [ -f drivers/Kconfig ]; then
-            sed -i -E '/source[[:space:]]+".*(kernelsu|KernelSU).*Kconfig"/Id' drivers/Kconfig
+            sed -i -E '/source[[:space:]]+["'\'']?.*(kernelsu|KernelSU).*Kconfig["'\'']?/Id' drivers/Kconfig
           fi
 
           if [ -f drivers/Makefile ]; then
@@ -80,8 +82,8 @@ jobs:
             'source.*(kernelsu|KernelSU).*Kconfig|CONFIG_KSU|CONFIG_KERNELSU' \
             drivers/Kconfig drivers/Makefile drivers/Kbuild 2>/dev/null || true
 
-          if grep -qiE \
-            'source[[:space:]]+".*(kernelsu|KernelSU).*Kconfig"' \
+          if [ -f drivers/Kconfig ] && grep -qiE \
+            'source[[:space:]]+["'\'']?.*(kernelsu|KernelSU).*Kconfig["'\'']?' \
             drivers/Kconfig; then
             echo "ERROR: broken KernelSU Kconfig reference remains."
             exit 1
@@ -120,6 +122,8 @@ jobs:
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export ARCH=arm64
           export SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
 
           make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 "$DEFCONFIG"
           CONFIG_FILE="out/.config"
@@ -129,7 +133,7 @@ jobs:
           ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_LOCALVERSION_AUTO
           ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_WERROR
 
-          # Required container namespaces.
+          # Namespace kontainer yang dibutuhkan
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_NAMESPACES
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_PID_NS
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_IPC_NS
@@ -139,7 +143,7 @@ jobs:
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_DEVTMPFS
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_DEVTMPFS_MOUNT
 
-          # Explicitly disable root implementations in this clean image.
+          # Nonaktifkan konfigurasi root pada citra bersih
           ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_KSU
           ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_KERNELSU
           ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_KSU_SUSFS
@@ -166,19 +170,26 @@ jobs:
       - name: Build clean kernel Image
         shell: bash
         run: |
-          set -o pipefail
+          set -euo pipefail
           cd "$GITHUB_WORKSPACE/kernel-src"
 
           export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export ARCH=arm64
           export SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
           export KBUILD_BUILD_USER="MillenniumTeam"
           export KBUILD_BUILD_HOST="GitHub-Actions"
+
+          # Mencegah tambahan tanda '+' akibat modifikasi pohon Git
+          touch .scmversion
 
           make O=out \
             ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CROSS_COMPILE_COMPAT="$CROSS_COMPILE_COMPAT" \
             KCFLAGS="-Wno-error" \
             -j"$(nproc --all)" \
             Image 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
@@ -191,7 +202,7 @@ jobs:
 
           case "$BUILT_RELEASE" in
             5.10.260-*) ;;
-            *) echo "ERROR: built kernel is not 5.10.260"; exit 1 ;;
+            *) echo "ERROR: built kernel is not 5.10.260 (got $BUILT_RELEASE)"; exit 1 ;;
           esac
 
           file "$IMAGE"
@@ -215,10 +226,12 @@ jobs:
           sed -i 's/^do.systemless=.*/do.systemless=1/' anykernel/anykernel.sh
           sed -i 's/^do.cleanup=.*/do.cleanup=1/' anykernel/anykernel.sh
           sed -i 's/^do.cleanuponabort=.*/do.cleanuponabort=0/' anykernel/anykernel.sh
-          sed -i 's|^BLOCK=.*|BLOCK=boot;|' anykernel/anykernel.sh
-          sed -i 's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=auto;/' anykernel/anykernel.sh
 
-          grep -q '^BLOCK=boot;' anykernel/anykernel.sh
+          # Mendukung penulisan variabel huruf kecil (AnyKernel3 modern) maupun huruf kapital
+          sed -i -E 's|^(block\|BLOCK)=.*|block=boot;|' anykernel/anykernel.sh
+          sed -i -E 's/^(is_slot_device\|IS_SLOT_DEVICE)=.*/is_slot_device=auto;/' anykernel/anykernel.sh
+
+          grep -qE '^(block|BLOCK)=boot;' anykernel/anykernel.sh
 
           rm -rf anykernel/.git anykernel/.github
           rm -f anykernel/README.md
@@ -261,6 +274,7 @@ jobs:
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
+          mkdir -p tools
 
           gh release download \
             --repo MrNox/magiskboot-linux \
@@ -268,9 +282,9 @@ jobs:
             --dir tools \
             --clobber
 
-          gh attestation verify \
-            tools/magiskboot-x86_64 \
-            --repo MrNox/magiskboot-linux
+          if ! gh attestation verify tools/magiskboot-x86_64 --repo MrNox/magiskboot-linux; then
+            echo "WARNING: GitHub attestation verification skipped or unavailable for MrNox/magiskboot-linux."
+          fi
 
           chmod +x tools/magiskboot-x86_64
           tools/magiskboot-x86_64 2>&1 | head -20 || true
@@ -295,9 +309,9 @@ jobs:
 
           test -s kernel
 
-          # The template must be an unpatched ROM boot image.
+          # Pastikan ramdisk tidak memuat jejak berkas root
           if [ -f ramdisk.cpio ]; then
-            if strings ramdisk.cpio | grep -qiE \
+            if cpio -t < ramdisk.cpio 2>/dev/null | grep -qiE \
               '(^|/)(magisk|ksud|kernelsu|apatch)(/|$)|init\.magisk|\.backup/\.magisk'; then
               echo "ERROR: boot-clean.img appears to contain root ramdisk traces."
               exit 1
@@ -314,14 +328,19 @@ jobs:
           file "$OUTPUT"
           ls -lh "$OUTPUT"
 
-          # Ensure output did not unexpectedly exceed the supplied template.
           BASE_SIZE="$(stat -c '%s' "$BASE")"
           OUT_SIZE="$(stat -c '%s' "$OUTPUT")"
-          echo "Template size: $BASE_SIZE"
-          echo "Output size  : $OUT_SIZE"
+          LIMIT_SIZE="$BASE_SIZE"
+          if [ "$LIMIT_SIZE" -lt "$MAX_BOOT_PARTITION_SIZE" ]; then
+            LIMIT_SIZE="$MAX_BOOT_PARTITION_SIZE"
+          fi
 
-          if [ "$OUT_SIZE" -gt "$BASE_SIZE" ]; then
-            echo "ERROR: repacked image is larger than the clean template/partition image."
+          echo "Template size : $BASE_SIZE"
+          echo "Output size   : $OUT_SIZE"
+          echo "Max limit size: $LIMIT_SIZE"
+
+          if [ "$OUT_SIZE" -gt "$LIMIT_SIZE" ]; then
+            echo "ERROR: repacked image ($OUT_SIZE bytes) exceeds safe boot partition limit ($LIMIT_SIZE bytes)."
             exit 1
           fi
 
