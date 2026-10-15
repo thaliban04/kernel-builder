@@ -16,7 +16,7 @@ env:
   BUILD_NAME: KagamiChihiro-5.10.260-A16
   BOOT_TEMPLATE_TAG: boot-template
   BOOT_TEMPLATE_ASSET: boot-clean.img
-  MAX_BOOT_PARTITION_SIZE: 67108864 # 64 MB batas aman partisi boot MT6789
+  MAX_BOOT_PARTITION_SIZE: 67108864 # Batas aman 64 MB untuk partisi boot MT6789
 
 jobs:
   build:
@@ -62,11 +62,11 @@ jobs:
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/kernel-src"
 
-          # Hapus direktori KernelSU untuk varian kernel tanpa root
+          # Workflow ini khusus membangun varian kernel bersih tanpa root.
           rm -rf drivers/kernelsu drivers/KernelSU KernelSU KernelSU-Next
 
           if [ -f drivers/Kconfig ]; then
-            sed -i -E '/source[[:space:]]+["'\'']?.*(kernelsu|KernelSU).*Kconfig["'\'']?/Id' drivers/Kconfig
+            sed -i -E '/source[[:space:]]+".*(kernelsu|KernelSU).*Kconfig"/Id' drivers/Kconfig
           fi
 
           if [ -f drivers/Makefile ]; then
@@ -83,7 +83,7 @@ jobs:
             drivers/Kconfig drivers/Makefile drivers/Kbuild 2>/dev/null || true
 
           if [ -f drivers/Kconfig ] && grep -qiE \
-            'source[[:space:]]+["'\'']?.*(kernelsu|KernelSU).*Kconfig["'\'']?' \
+            'source[[:space:]]+".*(kernelsu|KernelSU).*Kconfig"' \
             drivers/Kconfig; then
             echo "ERROR: broken KernelSU Kconfig reference remains."
             exit 1
@@ -133,7 +133,7 @@ jobs:
           ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_LOCALVERSION_AUTO
           ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_WERROR
 
-          # Namespace kontainer yang dibutuhkan
+          # Namespace kontainer yang dibutuhkan.
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_NAMESPACES
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_PID_NS
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_IPC_NS
@@ -143,7 +143,7 @@ jobs:
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_DEVTMPFS
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_DEVTMPFS_MOUNT
 
-          # Nonaktifkan konfigurasi root pada citra bersih
+          # Nonaktifkan implementasi root secara eksplisit pada citra bersih ini.
           ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_KSU
           ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_KERNELSU
           ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_KSU_SUSFS
@@ -180,9 +180,6 @@ jobs:
           export CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
           export KBUILD_BUILD_USER="MillenniumTeam"
           export KBUILD_BUILD_HOST="GitHub-Actions"
-
-          # Mencegah tambahan tanda '+' akibat modifikasi pohon Git
-          touch .scmversion
 
           make O=out \
             ARCH=arm64 \
@@ -226,12 +223,10 @@ jobs:
           sed -i 's/^do.systemless=.*/do.systemless=1/' anykernel/anykernel.sh
           sed -i 's/^do.cleanup=.*/do.cleanup=1/' anykernel/anykernel.sh
           sed -i 's/^do.cleanuponabort=.*/do.cleanuponabort=0/' anykernel/anykernel.sh
+          sed -i -E 's|^(BLOCK\|block)=.*|BLOCK=boot;|' anykernel/anykernel.sh
+          sed -i -E 's/^(IS_SLOT_DEVICE\|is_slot_device)=.*/IS_SLOT_DEVICE=auto;/' anykernel/anykernel.sh
 
-          # Mendukung penulisan variabel huruf kecil (AnyKernel3 modern) maupun huruf kapital
-          sed -i -E 's|^(block\|BLOCK)=.*|block=boot;|' anykernel/anykernel.sh
-          sed -i -E 's/^(is_slot_device\|IS_SLOT_DEVICE)=.*/is_slot_device=auto;/' anykernel/anykernel.sh
-
-          grep -qE '^(block|BLOCK)=boot;' anykernel/anykernel.sh
+          grep -qiE '^block=boot;' anykernel/anykernel.sh
 
           rm -rf anykernel/.git anykernel/.github
           rm -f anykernel/README.md
@@ -246,6 +241,7 @@ jobs:
           sha256sum "${BUILD_NAME}.zip" > "${BUILD_NAME}.zip.sha256"
 
       - name: Download clean boot template from this repository release
+        id: boot_template
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -253,21 +249,26 @@ jobs:
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/prebuilt"
 
-          gh release download "$BOOT_TEMPLATE_TAG" \
+          if gh release download "$BOOT_TEMPLATE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --pattern "$BOOT_TEMPLATE_ASSET" \
             --dir "$GITHUB_WORKSPACE/prebuilt" \
-            --clobber
-
-          BASE="$GITHUB_WORKSPACE/prebuilt/$BOOT_TEMPLATE_ASSET"
-          test -s "$BASE"
-
-          echo "Clean boot template:"
-          file "$BASE"
-          ls -lh "$BASE"
-          sha256sum "$BASE" | tee "$GITHUB_WORKSPACE/boot-clean-template.sha256"
+            --clobber; then
+            BASE="$GITHUB_WORKSPACE/prebuilt/$BOOT_TEMPLATE_ASSET"
+            test -s "$BASE"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "Clean boot template:"
+            file "$BASE"
+            ls -lh "$BASE"
+            sha256sum "$BASE" | tee "$GITHUB_WORKSPACE/boot-clean-template.sha256"
+          else
+            echo "WARNING: Release '$BOOT_TEMPLATE_TAG' dengan aset '$BOOT_TEMPLATE_ASSET' tidak ditemukan."
+            echo "Melewati pembuatan clean-boot.img dan melanjutkan publikasi AnyKernel3 ZIP."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Download and verify Linux magiskboot
+        if: steps.boot_template.outputs.found == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -282,14 +283,17 @@ jobs:
             --dir tools \
             --clobber
 
-          if ! gh attestation verify tools/magiskboot-x86_64 --repo MrNox/magiskboot-linux; then
-            echo "WARNING: GitHub attestation verification skipped or unavailable for MrNox/magiskboot-linux."
+          if ! gh attestation verify \
+            tools/magiskboot-x86_64 \
+            --repo MrNox/magiskboot-linux; then
+            echo "WARNING: GitHub attestation verification skipped or unavailable."
           fi
 
           chmod +x tools/magiskboot-x86_64
           tools/magiskboot-x86_64 2>&1 | head -20 || true
 
       - name: Create root-free fastboot boot image
+        if: steps.boot_template.outputs.found == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -309,7 +313,7 @@ jobs:
 
           test -s kernel
 
-          # Pastikan ramdisk tidak memuat jejak berkas root
+          # Templat harus berupa boot image ROM murni tanpa patch root.
           if [ -f ramdisk.cpio ]; then
             if cpio -t < ramdisk.cpio 2>/dev/null | grep -qiE \
               '(^|/)(magisk|ksud|kernelsu|apatch)(/|$)|init\.magisk|\.backup/\.magisk'; then
@@ -388,14 +392,13 @@ jobs:
 
             Files:
             - ${{ env.BUILD_NAME }}.zip: AnyKernel3 recovery ZIP; preserves the currently installed ramdisk/root state.
-            - ${{ env.BUILD_NAME }}-clean-boot.img: fastboot image made from the exact clean boot template and a root-free kernel config.
+            - ${{ env.BUILD_NAME }}-clean-boot.img: fastboot image made from the exact clean boot template and a root-free kernel config (included when boot-template release is present).
 
             The clean IMG is ROM-build-specific. Do not flash it on a different AOSP build.
           files: |
             ${{ env.BUILD_NAME }}.zip
             ${{ env.BUILD_NAME }}.zip.sha256
-            ${{ env.BUILD_NAME }}-clean-boot.img
-            ${{ env.BUILD_NAME }}-clean-boot.img.sha256
+            ${{ env.BUILD_NAME }}-clean-boot.img*
             kernel-config-5.10.260-clean.txt
             Image.sha256
             build.log
