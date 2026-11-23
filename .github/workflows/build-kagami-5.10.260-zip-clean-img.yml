@@ -1,4 +1,4 @@
-name: Build KagamiChihiro 5.10.260 ZIP and Clean Boot IMG
+name: Build KagamiChihiro 5.10.260 ZIP with KernelSU & SuSFS
 
 on:
   workflow_dispatch:
@@ -56,80 +56,18 @@ jobs:
 
           echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
-      - name: Integrate SuSFS into Kernel Source
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$GITHUB_WORKSPACE"
-
-          PATCH_DIR="$GITHUB_WORKSPACE/susfs-src/kernel_patches"
-          PATCH_FILE="$PATCH_DIR/50_add_susfs_in_gki-android12-5.10.patch"
-
-          echo "=== 1. Clone SuSFS with a pinned revision ==="
-          rm -rf susfs-src
-          git clone --filter=blob:none --no-checkout \
-            https://gitlab.com/simonpunk/susfs4ksu.git susfs-src
-          cd susfs-src
-          git checkout gki-android12-5.10
-
-          test -f "$PATCH_DIR/fs/susfs.c"
-          test -f "$PATCH_DIR/include/linux/susfs.h"
-          test -f "$PATCH_DIR/include/linux/susfs_def.h"
-          test -f "$PATCH_FILE"
-
-          echo "=== 2. Verify this kernel before patching ==="
-          cd "$GITHUB_WORKSPACE/kernel-src"
-          test -f Makefile
-          test -f fs/exec.c
-          test -f fs/namei.c
-
-          if ! git diff --quiet || ! git diff --cached --quiet; then
-            echo "ERROR: kernel source has local modifications before SuSFS patching."
-            git reset --hard HEAD
-            git clean -fd
-          fi
-
-          echo "=== 3. Apply the SuSFS patch ==="
-          cp "$PATCH_DIR/fs/susfs.c" fs/
-          cp "$PATCH_DIR/include/linux/susfs.h" include/linux/
-          cp "$PATCH_DIR/include/linux/susfs_def.h" include/linux/
-
-          if git apply --check --verbose "$PATCH_FILE"; then
-            git apply --index --verbose "$PATCH_FILE"
-          else
-            echo "ERROR: SuSFS patch does not match this exact kernel checkout."
-            echo "Kernel commit: $(git rev-parse HEAD)"
-            echo "Kernel release: $(make -s kernelversion)"
-            echo "Patch: $PATCH_FILE"
-            git apply --check --verbose --stat "$PATCH_FILE" || true
-            exit 1
-          fi
-
-          echo "=== 4. Verify the integrated symbols ==="
-          grep -q 'susfs' include/linux/susfs.h
-          grep -q 'CONFIG_KSU_SUSFS' fs/susfs.c
-          echo "SuSFS integrated successfully."
-
-      - name: Remove incomplete KernelSU references for clean build
+      - name: Setup KernelSU-Next for SuSFS
         shell: bash
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/kernel-src"
 
-          # Bersihkan referensi in-tree KernelSU jika ada sisa
-          rm -rf drivers/kernelsu drivers/KernelSU KernelSU KernelSU-Next
+          echo "=== Memperbaiki symlink drivers/kernelsu dengan KernelSU-Next ==="
+          rm -rf drivers/kernelsu
+          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/dev/kernel/setup.sh" | bash -
 
-          if [ -f drivers/Kconfig ]; then
-            sed -i -E '/source[[:space:]]+".*(kernelsu|KernelSU).*Kconfig"/Id' drivers/Kconfig
-          fi
-
-          if [ -f drivers/Makefile ]; then
-            sed -i -E '/(kernelsu|KernelSU|CONFIG_KSU|CONFIG_KERNELSU)/Id' drivers/Makefile
-          fi
-
-          if [ -f drivers/Kbuild ]; then
-            sed -i -E '/(kernelsu|KernelSU|CONFIG_KSU|CONFIG_KERNELSU)/Id' drivers/Kbuild
-          fi
+          test -d drivers/kernelsu
+          echo "KernelSU-Next berhasil dihubungkan ke source tree!"
 
       - name: Install build dependencies
         shell: bash
@@ -178,7 +116,10 @@ jobs:
           # 1. Izinkan modul LKM luar (seperti NoMount) agar tidak panic saat CFI mismatch
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_CFI_PERMISSIVE
 
-          # 2. Aktifkan Fitur Native SuSFS di Kernel
+          # 2. Aktifkan KernelSU-Next
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_KSU
+
+          # 3. Aktifkan Fitur Native SuSFS di Kernel
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_KSU_SUSFS
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_KSU_SUSFS_SUS_PATH
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_KSU_SUSFS_SUS_MOUNT
@@ -203,10 +144,6 @@ jobs:
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_DEVTMPFS
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_DEVTMPFS_MOUNT
 
-          # Nonaktifkan KSU in-tree (KSU tetap berjalan dari ramdisk yang sudah terpasang)
-          ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_KSU
-          ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_KERNELSU
-
           ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_TCP_CONG_BBR3 || true
           ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_NTSYNC || true
           ./scripts/config --file "$CONFIG_FILE" --set-str CONFIG_DEFAULT_TCP_CONG "cubic"
@@ -215,7 +152,7 @@ jobs:
 
           echo "Final important configuration:"
           grep -E \
-            'CONFIG_LOCALVERSION=|CONFIG_CFI_PERMISSIVE=|CONFIG_KSU_SUSFS|CONFIG_(NAMESPACES|WERROR)=' \
+            'CONFIG_LOCALVERSION=|CONFIG_CFI_PERMISSIVE=|CONFIG_KSU=|CONFIG_KSU_SUSFS|CONFIG_(NAMESPACES|WERROR)=' \
             "$CONFIG_FILE" || true
 
           cp "$CONFIG_FILE" "$GITHUB_WORKSPACE/kernel-config-5.10.260-clean.txt"
@@ -434,18 +371,18 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release.outputs.tag }}
-          name: KagamiChihiro 5.10.260 ZIP and Clean Boot IMG
+          name: KagamiChihiro 5.10.260 ZIP with KernelSU & SuSFS
           body: |
             Device: Infinix Note 30 / MT6789
             Source version: 5.10.260
             Source commit: ${{ env.SOURCE_COMMIT }}
             KMI line: android12-5.10 / generation 9
             Android userspace target: Android 16
-            Features: Native SuSFS Integrated + CFI Permissive (NoMount Compatible)
+            Features: Built-in KernelSU-Next + Native SuSFS + CFI Permissive (NoMount Compatible)
 
             Files:
-            - ${{ env.BUILD_NAME }}.zip: AnyKernel3 recovery ZIP; preserves the currently installed ramdisk/root state.
-            - ${{ env.BUILD_NAME }}-clean-boot.img: fastboot image made from the exact clean boot template and a root-free kernel config (included when boot-template release is present).
+            - ${{ env.BUILD_NAME }}.zip: AnyKernel3 recovery ZIP with built-in KernelSU & SuSFS.
+            - ${{ env.BUILD_NAME }}-clean-boot.img: fastboot image.
           files: |
             ${{ env.BUILD_NAME }}.zip
             ${{ env.BUILD_NAME }}.zip.sha256
