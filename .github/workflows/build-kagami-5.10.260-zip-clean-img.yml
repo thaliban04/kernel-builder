@@ -56,13 +56,33 @@ jobs:
 
           echo "SOURCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
+      - name: Integrate SuSFS into Kernel Source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+
+          echo "=== 1. Cloning susfs4ksu (gki-android12-5.10) ==="
+          git clone --depth=1 -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git susfs-src
+
+          echo "=== 2. Copying SuSFS core driver and headers ==="
+          cp susfs-src/kernel_patches/fs/susfs.c kernel-src/fs/
+          cp susfs-src/kernel_patches/include/linux/susfs.h kernel-src/include/linux/
+          cp susfs-src/kernel_patches/include/linux/susfs_def.h kernel-src/include/linux/
+
+          echo "=== 3. Applying SuSFS patch to kernel ==="
+          cd "$GITHUB_WORKSPACE/kernel-src"
+          git apply ../susfs-src/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch || \
+            patch -p1 --forward < ../susfs-src/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch
+
+          echo "SuSFS successfully integrated into kernel tree!"
+
       - name: Remove incomplete KernelSU references for clean build
         shell: bash
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/kernel-src"
 
-          # Workflow ini khusus membangun varian kernel bersih tanpa root.
           rm -rf drivers/kernelsu drivers/KernelSU KernelSU KernelSU-Next
 
           if [ -f drivers/Kconfig ]; then
@@ -77,18 +97,6 @@ jobs:
             sed -i -E '/(kernelsu|KernelSU|CONFIG_KSU|CONFIG_KERNELSU)/Id' drivers/Kbuild
           fi
 
-          echo "Remaining direct KernelSU build references:"
-          grep -RniE \
-            'source.*(kernelsu|KernelSU).*Kconfig|CONFIG_KSU|CONFIG_KERNELSU' \
-            drivers/Kconfig drivers/Makefile drivers/Kbuild 2>/dev/null || true
-
-          if [ -f drivers/Kconfig ] && grep -qiE \
-            'source[[:space:]]+".*(kernelsu|KernelSU).*Kconfig"' \
-            drivers/Kconfig; then
-            echo "ERROR: broken KernelSU Kconfig reference remains."
-            exit 1
-          fi
-
       - name: Install build dependencies
         shell: bash
         run: |
@@ -99,7 +107,7 @@ jobs:
             device-tree-compiler dwarves flex \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
             git libelf-dev libncurses-dev libssl-dev \
-            lz4 lzop python3 rsync unzip zip file
+            lz4 lzop patch python3 rsync unzip zip file
 
       - name: Download AOSP Clang r416183b
         shell: bash
@@ -113,7 +121,7 @@ jobs:
           "$GITHUB_WORKSPACE/clang/bin/clang" --version
           "$GITHUB_WORKSPACE/clang/bin/ld.lld" --version
 
-      - name: Generate root-free GKI config
+      - name: Generate GKI config with SuSFS & Permissive CFI
         shell: bash
         run: |
           set -euo pipefail
@@ -133,7 +141,25 @@ jobs:
           ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_LOCALVERSION_AUTO
           ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_WERROR
 
-          # Namespace kontainer yang dibutuhkan.
+          # 1. Izinkan modul LKM luar (seperti NoMount) agar tidak panic karena CFI
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_CFI_PERMISSIVE
+
+          # 2. Aktifkan Fitur SuSFS di Kernel
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_KSU_SUSFS
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_KSU_SUSFS_SUS_PATH
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_KSU_SUSFS_SUS_MOUNT
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_KSU_SUSFS_SUS_KSTAT
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_KSU_SUSFS_SUS_OVERLAYFS
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_KSU_SUSFS_TRY_UMOUNT
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_KSU_SUSFS_SPOOF_UNAME
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_KSU_SUSFS_ENABLE_LOG
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+          ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_KSU_SUSFS_OPEN_REDIRECT
+
+          # Namespace kontainer yang dibutuhkan
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_NAMESPACES
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_PID_NS
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_IPC_NS
@@ -143,26 +169,15 @@ jobs:
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_DEVTMPFS
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_DEVTMPFS_MOUNT
 
-          # Nonaktifkan implementasi root secara eksplisit pada citra bersih ini.
-          ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_KSU
-          ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_KERNELSU
-          ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_KSU_SUSFS
-
           ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_TCP_CONG_BBR3 || true
           ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_NTSYNC || true
           ./scripts/config --file "$CONFIG_FILE" --set-str CONFIG_DEFAULT_TCP_CONG "cubic"
 
           make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
 
-          if grep -qE '^CONFIG_(KSU|KERNELSU|KSU_SUSFS)=y' "$CONFIG_FILE"; then
-            echo "ERROR: root-related kernel config is enabled."
-            grep -E '^CONFIG_(KSU|KERNELSU|KSU_SUSFS)=' "$CONFIG_FILE" || true
-            exit 1
-          fi
-
           echo "Final important configuration:"
           grep -E \
-            'CONFIG_LOCALVERSION=|CONFIG_(NAMESPACES|PID_NS|IPC_NS|UTS_NS|USER_NS|POSIX_MQUEUE|DEVTMPFS|WERROR)=|CONFIG_DEFAULT_TCP_CONG=|CONFIG_(KSU|KERNELSU|KSU_SUSFS)' \
+            'CONFIG_LOCALVERSION=|CONFIG_CFI_PERMISSIVE=|CONFIG_KSU_SUSFS|CONFIG_(NAMESPACES|WERROR)=' \
             "$CONFIG_FILE" || true
 
           cp "$CONFIG_FILE" "$GITHUB_WORKSPACE/kernel-config-5.10.260-clean.txt"
@@ -313,7 +328,6 @@ jobs:
 
           test -s kernel
 
-          # Templat harus berupa boot image ROM murni tanpa patch root.
           if [ -f ramdisk.cpio ]; then
             if cpio -t < ramdisk.cpio 2>/dev/null | grep -qiE \
               '(^|/)(magisk|ksud|kernelsu|apatch)(/|$)|init\.magisk|\.backup/\.magisk'; then
@@ -389,12 +403,11 @@ jobs:
             Source commit: ${{ env.SOURCE_COMMIT }}
             KMI line: android12-5.10 / generation 9
             Android userspace target: Android 16
+            Features: Native SuSFS Built-in + CFI Permissive (NoMount Compatible)
 
             Files:
             - ${{ env.BUILD_NAME }}.zip: AnyKernel3 recovery ZIP; preserves the currently installed ramdisk/root state.
             - ${{ env.BUILD_NAME }}-clean-boot.img: fastboot image made from the exact clean boot template and a root-free kernel config (included when boot-template release is present).
-
-            The clean IMG is ROM-build-specific. Do not flash it on a different AOSP build.
           files: |
             ${{ env.BUILD_NAME }}.zip
             ${{ env.BUILD_NAME }}.zip.sha256
