@@ -62,20 +62,53 @@ jobs:
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
 
-          echo "=== 1. Cloning susfs4ksu (gki-android12-5.10) ==="
-          git clone --depth=1 -b gki-android12-5.10 https://gitlab.com/simonpunk/susfs4ksu.git susfs-src
+          PATCH_DIR="$GITHUB_WORKSPACE/susfs-src/kernel_patches"
+          PATCH_FILE="$PATCH_DIR/50_add_susfs_in_gki-android12-5.10.patch"
 
-          echo "=== 2. Copying SuSFS core driver and headers ==="
-          cp susfs-src/kernel_patches/fs/susfs.c kernel-src/fs/
-          cp susfs-src/kernel_patches/include/linux/susfs.h kernel-src/include/linux/
-          cp susfs-src/kernel_patches/include/linux/susfs_def.h kernel-src/include/linux/
+          echo "=== 1. Clone SuSFS with a pinned revision ==="
+          rm -rf susfs-src
+          git clone --filter=blob:none --no-checkout \
+            https://gitlab.com/simonpunk/susfs4ksu.git susfs-src
+          cd susfs-src
+          git checkout gki-android12-5.10
 
-          echo "=== 3. Applying SuSFS patch to kernel ==="
+          test -f "$PATCH_DIR/fs/susfs.c"
+          test -f "$PATCH_DIR/include/linux/susfs.h"
+          test -f "$PATCH_DIR/include/linux/susfs_def.h"
+          test -f "$PATCH_FILE"
+
+          echo "=== 2. Verify this kernel before patching ==="
           cd "$GITHUB_WORKSPACE/kernel-src"
-          git apply ../susfs-src/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch || \
-            patch -p1 --forward < ../susfs-src/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch
+          test -f Makefile
+          test -f fs/exec.c
+          test -f fs/namei.c
 
-          echo "SuSFS successfully integrated into kernel tree!"
+          if ! git diff --quiet || ! git diff --cached --quiet; then
+            echo "ERROR: kernel source has local modifications before SuSFS patching."
+            git reset --hard HEAD
+            git clean -fd
+          fi
+
+          echo "=== 3. Apply the SuSFS patch ==="
+          cp "$PATCH_DIR/fs/susfs.c" fs/
+          cp "$PATCH_DIR/include/linux/susfs.h" include/linux/
+          cp "$PATCH_DIR/include/linux/susfs_def.h" include/linux/
+
+          if git apply --check --verbose "$PATCH_FILE"; then
+            git apply --index --verbose "$PATCH_FILE"
+          else
+            echo "ERROR: SuSFS patch does not match this exact kernel checkout."
+            echo "Kernel commit: $(git rev-parse HEAD)"
+            echo "Kernel release: $(make -s kernelversion)"
+            echo "Patch: $PATCH_FILE"
+            git apply --check --verbose --stat "$PATCH_FILE" || true
+            exit 1
+          fi
+
+          echo "=== 4. Verify the integrated symbols ==="
+          grep -q 'susfs' include/linux/susfs.h
+          grep -q 'CONFIG_KSU_SUSFS' fs/susfs.c
+          echo "SuSFS integrated successfully."
 
       - name: Remove incomplete KernelSU references for clean build
         shell: bash
@@ -83,6 +116,7 @@ jobs:
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/kernel-src"
 
+          # Bersihkan referensi in-tree KernelSU jika ada sisa
           rm -rf drivers/kernelsu drivers/KernelSU KernelSU KernelSU-Next
 
           if [ -f drivers/Kconfig ]; then
@@ -141,10 +175,10 @@ jobs:
           ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_LOCALVERSION_AUTO
           ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_WERROR
 
-          # 1. Izinkan modul LKM luar (seperti NoMount) agar tidak panic karena CFI
+          # 1. Izinkan modul LKM luar (seperti NoMount) agar tidak panic saat CFI mismatch
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_CFI_PERMISSIVE
 
-          # 2. Aktifkan Fitur SuSFS di Kernel
+          # 2. Aktifkan Fitur Native SuSFS di Kernel
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_KSU_SUSFS
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_KSU_SUSFS_SUS_PATH
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_KSU_SUSFS_SUS_MOUNT
@@ -168,6 +202,10 @@ jobs:
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_POSIX_MQUEUE
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_DEVTMPFS
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_DEVTMPFS_MOUNT
+
+          # Nonaktifkan KSU in-tree (KSU tetap berjalan dari ramdisk yang sudah terpasang)
+          ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_KSU
+          ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_KERNELSU
 
           ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_TCP_CONG_BBR3 || true
           ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_NTSYNC || true
@@ -403,7 +441,7 @@ jobs:
             Source commit: ${{ env.SOURCE_COMMIT }}
             KMI line: android12-5.10 / generation 9
             Android userspace target: Android 16
-            Features: Native SuSFS Built-in + CFI Permissive (NoMount Compatible)
+            Features: Native SuSFS Integrated + CFI Permissive (NoMount Compatible)
 
             Files:
             - ${{ env.BUILD_NAME }}.zip: AnyKernel3 recovery ZIP; preserves the currently installed ramdisk/root state.
