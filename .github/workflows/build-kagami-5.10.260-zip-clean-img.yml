@@ -62,7 +62,7 @@ jobs:
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/kernel-src"
 
-          echo "=== Memperbaiki symlink drivers/kernelsu dengan KernelSU-Next ==="
+          echo "=== Menghubungkan KernelSU-Next ==="
           rm -rf drivers/kernelsu
           curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/dev/kernel/setup.sh" | bash -
 
@@ -113,13 +113,18 @@ jobs:
           ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_LOCALVERSION_AUTO
           ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_WERROR
 
-          # 1. Izinkan modul LKM luar (seperti NoMount) agar tidak panic saat CFI mismatch
+          # 1. Izinkan modul LKM luar (seperti NoMount) agar tidak panic karena CFI
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_CFI_PERMISSIVE
 
           # 2. Aktifkan KernelSU-Next
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_KSU
 
-          # 3. Aktifkan Fitur Native SuSFS di Kernel
+          # 3. Nonaktifkan driver kustom Yamada yang memicu undefined symbol
+          ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_PAVOLIA_REINE_RESETPROP
+          ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_YAMADA_DEV_IDENTIFICATION
+          ./scripts/config --file "$CONFIG_FILE" --disable CONFIG_AYUNDA_RISU_SAFEPROP
+
+          # 4. Aktifkan Fitur Native SuSFS di Kernel
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_KSU_SUSFS
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_KSU_SUSFS_SUS_PATH
           ./scripts/config --file "$CONFIG_FILE" --enable CONFIG_KSU_SUSFS_SUS_MOUNT
